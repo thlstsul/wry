@@ -638,12 +638,13 @@ impl InnerWebView {
 
       if let Some(js) = msg.js_value() {
         if let Some(ipc_handler) = &ipc_handler {
-          ipc_handler(
-            Request::builder()
-              .uri(webview.uri().unwrap().to_string())
-              .body(js.to_string())
-              .unwrap(),
-          );
+          let url = webview.uri().unwrap().to_string();
+          let url = if url.starts_with("file:") {
+            "http://tauri.ipc.localhost".to_string()
+          } else {
+            url
+          };
+          ipc_handler(Request::builder().uri(url).body(js.to_string()).unwrap());
         }
       }
     });

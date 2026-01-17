@@ -902,6 +902,11 @@ impl InnerWebView {
 
         #[cfg(feature = "tracing")]
         let _span = tracing::info_span!(parent: None, "wry::ipc::handle").entered();
+        let url = if url.starts_with("file:") {
+          "http://tauri.ipc.localhost".to_string()
+        } else {
+          url
+        };
         ipc_handler(Request::builder().uri(url).body(js).unwrap());
 
         Ok(())

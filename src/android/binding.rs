@@ -340,6 +340,11 @@ pub unsafe fn ipc(mut env: JNIEnv, _: JClass, url: JString, body: JString) {
       let _span = tracing::info_span!(parent: None, "wry::ipc::handle").entered();
 
       let url = url.to_string_lossy().to_string();
+      let url = if url.starts_with("file:") {
+        "http://tauri.ipc.localhost".to_string()
+      } else {
+        url
+      };
       let body = body.to_string_lossy().to_string();
       if let Some(ipc) = IPC.lock().unwrap().as_ref() {
         (ipc.handler)(Request::builder().uri(url).body(body).unwrap())

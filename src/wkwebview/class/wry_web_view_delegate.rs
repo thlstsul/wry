@@ -58,6 +58,11 @@ define_class!(
             CStr::from_ptr(url_utf8).to_str(),
             CStr::from_ptr(js_utf8).to_str(),
           ) {
+            let url = if url.starts_with("file:") {
+              "http://tauri.ipc.localhost".to_string()
+            } else {
+              url
+            };
             if let Ok(r) = Request::builder().uri(url).body(js.to_string()) {
               ipc_handler(r);
             } else {
