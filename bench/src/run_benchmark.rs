@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
   collections::{HashMap, HashSet},
   env,
@@ -14,27 +14,20 @@ mod utils;
 
 /// The list of the examples of the benchmark name and binary relative path
 fn get_all_benchmarks() -> Vec<(String, String)> {
+  let extension = if cfg!(windows) { ".exe" } else { "" };
+  let target_triple = utils::get_target();
   vec![
     (
       "wry_hello_world".into(),
-      format!(
-        "tests/target/{}/release/bench_hello_world",
-        utils::get_target()
-      ),
+      format!("tests/target/{target_triple}/release/bench_hello_world{extension}"),
     ),
     (
       "wry_custom_protocol".into(),
-      format!(
-        "tests/target/{}/release/bench_custom_protocol",
-        utils::get_target()
-      ),
+      format!("tests/target/{target_triple}/release/bench_custom_protocol{extension}"),
     ),
     (
       "wry_cpu_intensive".into(),
-      format!(
-        "tests/target/{}/release/bench_cpu_intensive",
-        utils::get_target()
-      ),
+      format!("tests/target/{target_triple}/release/bench_cpu_intensive{extension}"),
     ),
   ]
 }
@@ -108,39 +101,60 @@ fn run_max_mem_benchmark() -> Result<HashMap<String, u64>> {
   Ok(results)
 }
 
-fn rlib_size(target_dir: &std::path::Path, prefix: &str) -> u64 {
-  let mut size = 0;
-  let mut seen = std::collections::HashSet::new();
-  println!("{:?}", target_dir);
+fn rlib_size(target_dir: &std::path::Path, library: &str) -> Result<u64> {
+  let prefix = format!("lib{library}");
 
-  for entry in std::fs::read_dir(target_dir.join("deps")).unwrap() {
-    let entry = entry.unwrap();
-    let os_str = entry.file_name();
-    let name = os_str.to_str().unwrap();
-    if name.starts_with(prefix) && name.ends_with(".rlib") {
-      let start = name.split('-').next().unwrap().to_string();
-      if seen.contains(&start) {
-        println!("skip {}", name);
-      } else {
-        seen.insert(start);
-        size += entry.metadata().unwrap().len();
-        println!("check size {} {}", name, size);
+  let mut size = 0;
+  let mut seen = HashSet::new();
+
+  let build_dir = target_dir.join("build").join(library);
+  for entry in std::fs::read_dir(&build_dir).with_context(|| {
+    format!(
+      "failed to read target build directory: {}",
+      build_dir.display()
+    )
+  })? {
+    let entry = entry.context("failed to read directory entry")?;
+    let out_path = entry.path().join("out");
+
+    for file in std::fs::read_dir(&out_path).with_context(|| {
+      format!(
+        "failed to read target build output directory: {}",
+        out_path.display()
+      )
+    })? {
+      let file = file.context("failed to read build output directory entry")?;
+      let name = file.file_name().to_string_lossy().to_string();
+      if name.starts_with(&prefix) && name.ends_with(".rlib") {
+        let start = name.split('-').next().unwrap();
+        if seen.insert(start.to_string()) {
+          size += file
+            .metadata()
+            .context("failed to read file metadata")?
+            .len();
+        }
       }
     }
   }
-  assert!(size > 0);
-  size
+
+  if size == 0 {
+    anyhow::bail!(
+      "no rlib files found for prefix {prefix} in {}",
+      build_dir.display()
+    );
+  }
+
+  Ok(size)
 }
 
 fn get_binary_sizes(target_dir: &Path) -> Result<HashMap<String, u64>> {
   let mut sizes = HashMap::<String, u64>::new();
 
-  let wry_size = rlib_size(target_dir, "libwry");
+  let wry_size = rlib_size(target_dir, "wry")?;
   println!("wry {} bytes", wry_size);
   sizes.insert("wry_rlib".to_string(), wry_size);
 
-  // add up size for everything in target/release/deps/libtao*
-  let tao_size = rlib_size(target_dir, "libtao");
+  let tao_size = rlib_size(target_dir, "tao")?;
   println!("tao {} bytes", tao_size);
   sizes.insert("tao_rlib".to_string(), tao_size);
 
@@ -212,10 +226,22 @@ fn run_exec_time(target_dir: &Path) -> Result<HashMap<String, HashMap<String, f6
     benchmark_file,
     "--warmup",
     "3",
+    // It seems like if we run them back to back,
+    // the execution time will get longer and longer for some reason on macOS and Windows
+    "--prepare",
+    "sleep 1",
   ]
   .iter()
   .map(|s| s.to_string())
   .collect::<Vec<_>>();
+
+  if cfg!(target_os = "windows") {
+    // For `sleep 1` to work
+    // hyperfine uses cmd by default and it would fail with
+    // 'Input redirection is not supported, exiting the process immediately.'
+    command.push("--shell".to_owned());
+    command.push("powershell".to_owned());
+  }
 
   for (_, example_exe) in get_all_benchmarks() {
     command.push(
@@ -284,11 +310,8 @@ fn main() -> Result<()> {
   serde_json::to_writer_pretty(std::io::stdout(), &new_data)?;
   println!("\n===== </BENCHMARK RESULTS>");
 
-  if let Some(filename) = target_dir.join("bench.json").to_str() {
-    utils::write_json(filename, &serde_json::to_value(&new_data)?)?;
-  } else {
-    eprintln!("Cannot write bench.json, path is invalid");
-  }
+  let output_path = target_dir.join("bench.json");
+  utils::write_json(&output_path, &serde_json::to_value(&new_data)?)?;
 
   Ok(())
 }
